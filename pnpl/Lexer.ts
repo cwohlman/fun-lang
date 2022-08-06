@@ -11,10 +11,11 @@ export class ParserState {
     return this.input.slice(this.position, this.position + length);
   }
 
-  consume() {
+  consume(length: number = 1) {
     if (this.position > this.input.length)
       throw new Error("Read past the end of the input");
-    this.position++;
+
+    this.position += length;
   }
 }
 
@@ -23,7 +24,7 @@ export class ParserStack {
 }
 
 export class Token {
-  position?: [number, number] = undefined;
+  constructor(public position: [number, number]) {}
 
   start() {
     return this.position && this.position[0];
@@ -34,8 +35,14 @@ export class Token {
   length() {
     return this.position && this.position[1] - this.position[0];
   }
+}
 
-  inheritPosition(...children: (Token | undefined)[]) {
+export class ParentToken extends Token {
+  constructor(childTokens: Token[]) {
+    super(ParentToken.getPosition(...childTokens));
+  }
+
+  static getPosition(...children: (Token | undefined)[]): [number, number] {
     const start = children.reduce((left, a) => {
       if (!a) return left;
 
@@ -48,22 +55,20 @@ export class Token {
     const end = children.reduce((left, a) => {
       if (!a) return left;
 
-      const right = a.start();
+      const right = a.end();
       if (left == null) return right;
       if (right == null) return left;
 
       return Math.max(left, right);
     }, undefined as number | undefined);
 
-    if (start != null && end != null) this.position = [start, end];
-
-    // could not inherit - TODO?
+    return [start!, end!];
   }
 }
 
 export class Symbol extends Token {
-  constructor(public chars: string) {
-    super();
+  constructor(public chars: string, position: [number, number]) {
+    super(position);
   }
 
   static readonly regex = /\p{Punctuation}|\p{Symbol}/u;
@@ -74,8 +79,8 @@ export class Symbol extends Token {
 }
 
 export class Emoji extends Token {
-  constructor(public chars: string) {
-    super();
+  constructor(public chars: string, position: [number, number]) {
+    super(position);
   }
 
   static readonly regex = /\p{Extended_Pictographic}/u;
@@ -86,8 +91,8 @@ export class Emoji extends Token {
 }
 
 export class Name extends Token {
-  constructor(public name: string) {
-    super();
+  constructor(public name: string, position: [number, number]) {
+    super(position);
   }
   static readonly regex = /\p{Letter}/u;
 
@@ -97,8 +102,8 @@ export class Name extends Token {
 }
 
 export class Number extends Token {
-  constructor(public name: string) {
-    super();
+  constructor(public name: string, position: [number, number]) {
+    super(position);
   }
   static readonly regex = /\d/u;
 
@@ -109,16 +114,15 @@ export class Number extends Token {
 
 export type WordPart = Symbol | Name | Emoji | Number | Block | Quote | Comment;
 
-export class Word extends Token {
+export class Word extends ParentToken {
   constructor(public parts: WordPart[]) {
-    super();
-
-    this.inheritPosition(...parts);
+    super(parts);
   }
 
   static parseWord(state: ParserState): Word {
     let parts: WordPart[] = [];
     let accumulator = "";
+    let startIndex = state.position;
     while (state.any()) {
       const next = state.peek();
       if (Whitespace.isWhitespace(next)) {
@@ -128,35 +132,28 @@ export class Word extends Token {
         } else {
           return wrapUp();
         }
-      }
-      else if (Block.isBlockStart(next)) {
+      } else if (Block.isBlockStart(next)) {
         wrapUpPart();
 
         parts.push(Block.parseBlock(state));
-      }
-      else if (Quote.isQuoteStart(next)) {
+      } else if (Quote.isQuoteStart(next)) {
         if (!Quote.isEscapePrefix(accumulator)) wrapUpPart();
 
         parts.push(Quote.parseQuote(state, accumulator));
-      }
-      else if (Symbol.isSymbol(next)) {
+      } else if (Symbol.isSymbol(next)) {
         addSymbol(next);
         state.consume();
-      }
-      else if (Emoji.isEmoji(next)) {
+      } else if (Emoji.isEmoji(next)) {
         addEmoji(next);
         state.consume();
-      }
-      else if (Number.isNumber(next)) {
+      } else if (Number.isNumber(next)) {
         addNumber(next);
         state.consume();
-      }
-      else if (Name.isName(next)) {
+      } else if (Name.isName(next)) {
         addName(next);
         state.consume();
-      }
-      else {
-        throw new Error("Unrecognized code")
+      } else {
+        throw new Error("Unrecognized code");
       }
     }
 
@@ -168,19 +165,22 @@ export class Word extends Token {
 
     function getPart() {
       const part = accumulator;
+      const start = startIndex;
+      const end = state.position; // TODO: is this off by one?
+
       accumulator = "";
 
       if (Symbol.isSymbol(part[0])) {
-        return new Symbol(part);
+        return new Symbol(part, [start, end]);
       }
       if (Name.isName(part[0])) {
-        return new Name(part);
+        return new Name(part, [start, end]);
       }
       if (Number.isNumber(part[0])) {
-        return new Number(part);
+        return new Number(part, [start, end]);
       }
       if (Emoji.isEmoji(part[0])) {
-        return new Emoji(part);
+        return new Emoji(part, [start, end]);
       }
 
       throw new Error("Unrecognized word part:" + part);
@@ -215,8 +215,8 @@ export class Word extends Token {
 }
 
 export class Whitespace extends Token {
-  constructor(public chars: string) {
-    super();
+  constructor(public chars: string, position: [number, number]) {
+    super(position);
   }
 
   static readonly regex = /\s/u;
@@ -227,19 +227,25 @@ export class Whitespace extends Token {
 
   static parseWhitespace(state: ParserState): PhrasePart {
     let whitespace = "";
+    let start = state.position;
 
     while (this.isWhitespace(state.peek())) {
       whitespace += state.peek();
       state.consume();
     }
+    let end = state.position;
 
-    return new Whitespace(whitespace);
+    return new Whitespace(whitespace, [start, end]);
   }
 }
 
 export class Comment extends Token {
-  constructor(public opener: string, public chars: string) {
-    super();
+  constructor(
+    public opener: string,
+    public chars: string,
+    position: [number, number]
+  ) {
+    super(position);
   }
 
   static readonly openerRegex = /[#]/u;
@@ -249,38 +255,36 @@ export class Comment extends Token {
 
   private static readonly commentEnderRegex = /\r\n?|\n/;
   static isCommentEnder(char: string) {
-    if(Comment.commentEnderRegex.test(char)) return true;
+    if (Comment.commentEnderRegex.test(char)) return true;
   }
 
   static parseComment(state: ParserState, accumulator: string): Comment {
     let commentOpener = accumulator + state.peek();
     state.consume();
+    let start = state.position;
 
     let comment = "";
-    while (! this.isCommentEnder(state.peek())) {
+    while (!this.isCommentEnder(state.peek())) {
       comment += state.peek();
       state.consume();
     }
+    let end = state.position;
 
-    return new Comment(commentOpener, comment);
+    return new Comment(commentOpener, comment, [start, end]);
   }
 }
 
 export type PhrasePart = Word | Whitespace;
 
-export class Phrase extends Token {
+export class Phrase extends ParentToken {
   constructor(public parts: PhrasePart[]) {
-    super();
-
-    this.inheritPosition(...parts);
+    super(parts);
   }
 }
 
-export class Statement extends Token {
+export class Statement extends ParentToken {
   constructor(public phrase: Phrase, public terminator?: Symbol) {
-    super();
-
-    this.inheritPosition(phrase, terminator);
+    super([phrase, terminator].filter((a) => a) as Token[]);
   }
 
   static isTerminator(next: string) {
@@ -288,11 +292,9 @@ export class Statement extends Token {
   }
 }
 
-export class Block extends Token {
+export class Block extends ParentToken {
   constructor(public delimiters: [Symbol, Symbol], public body: Statement[]) {
-    super();
-
-    this.inheritPosition(...delimiters, ...body);
+    super([...delimiters, ...body]);
   }
 
   static blockStartRegex = /\p{Open_Punctuation}/u;
@@ -307,26 +309,38 @@ export class Block extends Token {
   // TODO: matching pairs of brackets
 
   static parseBlock(state: ParserState): Block {
-    const openingParen = state.peek();
+    const openingParen = new Symbol(state.peek(), [
+      state.position,
+      state.position,
+    ]);
     state.consume();
 
     return this.parseBlockInner(openingParen, state);
   }
 
-  static parseBlockInner(openingParen: string, state: ParserState): Block {
+  static parseBlockInner(openingParen: Symbol, state: ParserState): Block {
     let statements: Statement[] = [];
     let phrases: PhrasePart[] = [];
     while (state.any()) {
       const next = state.peek();
       if (Block.isMatchingParen(openingParen, next)) {
+        const closer = new Symbol(next, [state.position, state.position]);
         state.consume();
-        return wrapUp(next);
+
+        return wrapUp(closer);
       } else if (Block.isBlockEnd(next)) {
+        const closer = new Symbol(next, [state.position, state.position]);
         state.consume();
-        return new ParseError("Non-matching block end") as any;
+
+        return new ParseError("Non-matching block end", [
+          ...statements,
+          ...phrases,
+          closer,
+        ]) as any;
       } else if (Statement.isTerminator(next)) {
+        const terminator = new Symbol(next, [state.position, state.position]);
+        wrapUpStatement(terminator);
         state.consume();
-        wrapUpStatement(next);
       } else if (Whitespace.isWhitespace(next)) {
         phrases.push(Whitespace.parseWhitespace(state));
       } else phrases.push(Word.parseWord(state));
@@ -334,29 +348,22 @@ export class Block extends Token {
 
     return wrapUp();
 
-    function wrapUpStatement(terminator?: string) {
+    function wrapUpStatement(terminator?: Symbol) {
       if (phrases.length)
-        statements.push(
-          new Statement(
-            new Phrase(phrases),
-            typeof terminator == "string" ? new Symbol(terminator) : undefined
-          )
-        );
+        statements.push(new Statement(new Phrase(phrases), terminator));
       phrases = [];
     }
 
-    function wrapUp(closer?: string) {
+    function wrapUp(closer?: Symbol) {
       wrapUpStatement();
 
-      return new Block(
-        [new Symbol(openingParen), new Symbol(closer || "")],
-        statements
-      );
+      return new Block([openingParen, closer!], statements);
     }
   }
 
   static parenPairs = ["{}", "[]", "()"] as const;
-  static isMatchingParen(left: string, right: string): boolean {
+  static isMatchingParen(leftSymbol: Symbol, right: string): boolean {
+    const left = leftSymbol.chars;
     const matchingStart = this.parenPairs.find((p) => p[0] == left);
     if (matchingStart && matchingStart[1] != right) return false;
 
@@ -369,21 +376,30 @@ export class Block extends Token {
 }
 
 export class Quote extends Token {
-  constructor(public delimiters: [Symbol, Symbol], public body: string) {
-    super();
-
-    this.inheritPosition(...delimiters);
+  constructor(
+    public delimiters: [Symbol, Symbol],
+    public body: string,
+    position: [number, number]
+  ) {
+    super(position);
   }
 
   static parseQuote(state: ParserState, accumulator: string): Quote {
     const openingQuote = state.peek();
+    const start = state.position;
+
     state.consume();
 
     const opener = accumulator + openingQuote;
+    const openerSymbol = new Symbol(openingQuote, [
+      state.position,
+      state.position,
+    ]);
     const expectedCloser = openingQuote + accumulator;
+    const closerLength = expectedCloser.length;
 
     let content = "";
-    while (state.peek(expectedCloser.length) != expectedCloser) {
+    while (state.peek(closerLength) != expectedCloser) {
       const next = state.peek();
       state.consume();
       if (accumulator && next == "\\") {
@@ -392,14 +408,27 @@ export class Quote extends Token {
       } else {
         content += next;
       }
-      state.consume();
 
       if (!state.any()) {
-        return new ParseError("Expected closing quote") as any;
+        const end = state.position;
+        return new ParseError("Expected closing quote", [
+          new Quote(
+            [openerSymbol, new Symbol("", [state.position, state.position])],
+            content,
+            [start, end]
+          ),
+        ]) as any;
       }
     }
+    const closer = new Symbol(state.peek(closerLength), [
+      state.position,
+      state.position + closerLength,
+    ]);
+    state.consume(closerLength);
 
-    return new Quote([new Symbol(opener), new Symbol(expectedCloser)], content);
+    const end = state.position;
+
+    return new Quote([openerSymbol, closer], content, [start, end]);
   }
 
   static readonly regex = /\p{Quotation_Mark}|[`´]/u;
@@ -418,34 +447,87 @@ export class Quote extends Token {
   }
 }
 
-export class Program extends Token {
+export class Program extends ParentToken {
   constructor(public statements: Statement[]) {
-    super();
-
-    this.inheritPosition(...statements);
+    super(statements);
   }
 
   static parseProgram(input: string) {
-    const blockParser = Block.parseBlockInner("", new ParserState(input));
+    const blockParser = Block.parseBlockInner(
+      new Symbol("", [0, 0]),
+      new ParserState(input)
+    );
     return new Program(blockParser.body);
   }
 }
 
-export class ParseError extends Token {
-  constructor(public message: string) {
-    super();
+export class ParseError extends ParentToken {
+  constructor(public message: string, childTokens: Token[]) {
+    super(childTokens);
   }
 }
 
-const output = Program.parseProgram(`
-x[foo] = {
-  y = foo;
-  z = 100;
+const expressions = `
+x[foo]
+a(b)
+f{z}
+m\`foo\`
+m'foo'
+m"foo"
+m ##'foo'##
+m #####'foo'#####
+m\`foo\`
+biz baz buz
+foo(bar, bim, bam)
+! @ Foo BAR.BIM
+`.split("\n");
+function makeRunner(lines: number, depth: number) {
+  let program = "";
+  let currentDepth = 0;
+  let currentLine = 0;
+  let ascending = true;
 
-  y + z
+  while (currentLine < lines) {
+    let newLine = expressions[currentLine % expressions.length];
+    if (ascending) {
+      if (currentDepth < depth) {
+        currentDepth++;
+        newLine += " = {";
+      } else {
+        ascending = false;
+      }
+    } else {
+      if (currentDepth > 0) {
+        currentDepth--;
+        newLine += " }"
+      } else {
+        ascending = true;
+      }
+    }
+
+    program += new Array(currentDepth).fill("  ").join("") +  newLine + "\n"
+
+    currentLine++;
+  }
+
+  console.log(program);
+
+  return () => {
+    return Program.parseProgram(program);
+    // console.log(compiled.length());
+  }
+}
+const run = makeRunner(1_000, 1);
+const start = Date.now();
+
+for (var i = 0; i < 1_000; i++) {
+  const result = run();
+
+  if (i == 0) console.log(result);
 }
 
-biz[m] = x[m + 1]
-`);
+const end = Date.now();
 
-console.log(JSON.stringify(output, null, 2));
+console.log(end - start);
+
+// console.log(JSON.stringify(output, null, 2));

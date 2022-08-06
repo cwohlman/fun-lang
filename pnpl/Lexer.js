@@ -20,7 +20,7 @@ var __spreadArrays = (this && this.__spreadArrays) || function () {
     return r;
 };
 exports.__esModule = true;
-exports.ParseError = exports.Program = exports.Quote = exports.Block = exports.Statement = exports.Phrase = exports.Comment = exports.Whitespace = exports.Word = exports.Number = exports.Name = exports.Emoji = exports.Symbol = exports.Token = exports.ParserStack = exports.ParserState = void 0;
+exports.ParseError = exports.Program = exports.Quote = exports.Block = exports.Statement = exports.Phrase = exports.Comment = exports.Whitespace = exports.Word = exports.Number = exports.Name = exports.Emoji = exports.Symbol = exports.ParentToken = exports.Token = exports.ParserStack = exports.ParserState = void 0;
 var ParserState = /** @class */ (function () {
     function ParserState(input, position) {
         if (position === void 0) { position = 0; }
@@ -38,10 +38,11 @@ var ParserState = /** @class */ (function () {
             return this.input[this.position];
         return this.input.slice(this.position, this.position + length);
     };
-    ParserState.prototype.consume = function () {
+    ParserState.prototype.consume = function (length) {
+        if (length === void 0) { length = 1; }
         if (this.position > this.input.length)
             throw new Error("Read past the end of the input");
-        this.position++;
+        this.position += length;
     };
     return ParserState;
 }());
@@ -55,8 +56,8 @@ var ParserStack = /** @class */ (function () {
 }());
 exports.ParserStack = ParserStack;
 var Token = /** @class */ (function () {
-    function Token() {
-        this.position = undefined;
+    function Token(position) {
+        this.position = position;
     }
     Token.prototype.start = function () {
         return this.position && this.position[0];
@@ -67,7 +68,15 @@ var Token = /** @class */ (function () {
     Token.prototype.length = function () {
         return this.position && this.position[1] - this.position[0];
     };
-    Token.prototype.inheritPosition = function () {
+    return Token;
+}());
+exports.Token = Token;
+var ParentToken = /** @class */ (function (_super) {
+    __extends(ParentToken, _super);
+    function ParentToken(childTokens) {
+        return _super.call(this, ParentToken.getPosition.apply(ParentToken, childTokens)) || this;
+    }
+    ParentToken.getPosition = function () {
         var children = [];
         for (var _i = 0; _i < arguments.length; _i++) {
             children[_i] = arguments[_i];
@@ -85,24 +94,22 @@ var Token = /** @class */ (function () {
         var end = children.reduce(function (left, a) {
             if (!a)
                 return left;
-            var right = a.start();
+            var right = a.end();
             if (left == null)
                 return right;
             if (right == null)
                 return left;
             return Math.max(left, right);
         }, undefined);
-        if (start != null && end != null)
-            this.position = [start, end];
-        // could not inherit - TODO?
+        return [start, end];
     };
-    return Token;
-}());
-exports.Token = Token;
+    return ParentToken;
+}(Token));
+exports.ParentToken = ParentToken;
 var Symbol = /** @class */ (function (_super) {
     __extends(Symbol, _super);
-    function Symbol(chars) {
-        var _this = _super.call(this) || this;
+    function Symbol(chars, position) {
+        var _this = _super.call(this, position) || this;
         _this.chars = chars;
         return _this;
     }
@@ -116,8 +123,8 @@ var Symbol = /** @class */ (function (_super) {
 exports.Symbol = Symbol;
 var Emoji = /** @class */ (function (_super) {
     __extends(Emoji, _super);
-    function Emoji(chars) {
-        var _this = _super.call(this) || this;
+    function Emoji(chars, position) {
+        var _this = _super.call(this, position) || this;
         _this.chars = chars;
         return _this;
     }
@@ -131,8 +138,8 @@ var Emoji = /** @class */ (function (_super) {
 exports.Emoji = Emoji;
 var Name = /** @class */ (function (_super) {
     __extends(Name, _super);
-    function Name(name) {
-        var _this = _super.call(this) || this;
+    function Name(name, position) {
+        var _this = _super.call(this, position) || this;
         _this.name = name;
         return _this;
     }
@@ -146,8 +153,8 @@ var Name = /** @class */ (function (_super) {
 exports.Name = Name;
 var Number = /** @class */ (function (_super) {
     __extends(Number, _super);
-    function Number(name) {
-        var _this = _super.call(this) || this;
+    function Number(name, position) {
+        var _this = _super.call(this, position) || this;
         _this.name = name;
         return _this;
     }
@@ -162,14 +169,14 @@ exports.Number = Number;
 var Word = /** @class */ (function (_super) {
     __extends(Word, _super);
     function Word(parts) {
-        var _this = _super.call(this) || this;
+        var _this = _super.call(this, parts) || this;
         _this.parts = parts;
-        _this.inheritPosition.apply(_this, parts);
         return _this;
     }
     Word.parseWord = function (state) {
         var parts = [];
         var accumulator = "";
+        var startIndex = state.position;
         while (state.any()) {
             var next = state.peek();
             if (Whitespace.isWhitespace(next)) {
@@ -217,18 +224,20 @@ var Word = /** @class */ (function (_super) {
         }
         function getPart() {
             var part = accumulator;
+            var start = startIndex;
+            var end = state.position; // TODO: is this off by one?
             accumulator = "";
             if (Symbol.isSymbol(part[0])) {
-                return new Symbol(part);
+                return new Symbol(part, [start, end]);
             }
             if (Name.isName(part[0])) {
-                return new Name(part);
+                return new Name(part, [start, end]);
             }
             if (Number.isNumber(part[0])) {
-                return new Number(part);
+                return new Number(part, [start, end]);
             }
             if (Emoji.isEmoji(part[0])) {
-                return new Emoji(part);
+                return new Emoji(part, [start, end]);
             }
             throw new Error("Unrecognized word part:" + part);
         }
@@ -258,12 +267,12 @@ var Word = /** @class */ (function (_super) {
         }
     };
     return Word;
-}(Token));
+}(ParentToken));
 exports.Word = Word;
 var Whitespace = /** @class */ (function (_super) {
     __extends(Whitespace, _super);
-    function Whitespace(chars) {
-        var _this = _super.call(this) || this;
+    function Whitespace(chars, position) {
+        var _this = _super.call(this, position) || this;
         _this.chars = chars;
         return _this;
     }
@@ -273,11 +282,13 @@ var Whitespace = /** @class */ (function (_super) {
     };
     Whitespace.parseWhitespace = function (state) {
         var whitespace = "";
+        var start = state.position;
         while (this.isWhitespace(state.peek())) {
             whitespace += state.peek();
             state.consume();
         }
-        return new Whitespace(whitespace);
+        var end = state.position;
+        return new Whitespace(whitespace, [start, end]);
     };
     Whitespace.regex = /\s/u;
     return Whitespace;
@@ -285,8 +296,8 @@ var Whitespace = /** @class */ (function (_super) {
 exports.Whitespace = Whitespace;
 var Comment = /** @class */ (function (_super) {
     __extends(Comment, _super);
-    function Comment(opener, chars) {
-        var _this = _super.call(this) || this;
+    function Comment(opener, chars, position) {
+        var _this = _super.call(this, position) || this;
         _this.opener = opener;
         _this.chars = chars;
         return _this;
@@ -302,12 +313,14 @@ var Comment = /** @class */ (function (_super) {
     Comment.parseComment = function (state, accumulator) {
         var commentOpener = accumulator + state.peek();
         state.consume();
+        var start = state.position;
         var comment = "";
         while (!this.isCommentEnder(state.peek())) {
             comment += state.peek();
             state.consume();
         }
-        return new Comment(commentOpener, comment);
+        var end = state.position;
+        return new Comment(commentOpener, comment, [start, end]);
     };
     Comment.openerRegex = /[#]/u;
     Comment.commentEnderRegex = /\r\n?|\n/;
@@ -317,36 +330,33 @@ exports.Comment = Comment;
 var Phrase = /** @class */ (function (_super) {
     __extends(Phrase, _super);
     function Phrase(parts) {
-        var _this = _super.call(this) || this;
+        var _this = _super.call(this, parts) || this;
         _this.parts = parts;
-        _this.inheritPosition.apply(_this, parts);
         return _this;
     }
     return Phrase;
-}(Token));
+}(ParentToken));
 exports.Phrase = Phrase;
 var Statement = /** @class */ (function (_super) {
     __extends(Statement, _super);
     function Statement(phrase, terminator) {
-        var _this = _super.call(this) || this;
+        var _this = _super.call(this, [phrase, terminator].filter(function (a) { return a; })) || this;
         _this.phrase = phrase;
         _this.terminator = terminator;
-        _this.inheritPosition(phrase, terminator);
         return _this;
     }
     Statement.isTerminator = function (next) {
         return next == ";" || next == ",";
     };
     return Statement;
-}(Token));
+}(ParentToken));
 exports.Statement = Statement;
 var Block = /** @class */ (function (_super) {
     __extends(Block, _super);
     function Block(delimiters, body) {
-        var _this = _super.call(this) || this;
+        var _this = _super.call(this, __spreadArrays(delimiters, body)) || this;
         _this.delimiters = delimiters;
         _this.body = body;
-        _this.inheritPosition.apply(_this, __spreadArrays(delimiters, body));
         return _this;
     }
     Block.isBlockStart = function (char) {
@@ -357,7 +367,10 @@ var Block = /** @class */ (function (_super) {
     };
     // TODO: matching pairs of brackets
     Block.parseBlock = function (state) {
-        var openingParen = state.peek();
+        var openingParen = new Symbol(state.peek(), [
+            state.position,
+            state.position,
+        ]);
         state.consume();
         return this.parseBlockInner(openingParen, state);
     };
@@ -367,16 +380,21 @@ var Block = /** @class */ (function (_super) {
         while (state.any()) {
             var next = state.peek();
             if (Block.isMatchingParen(openingParen, next)) {
+                var closer = new Symbol(next, [state.position, state.position]);
                 state.consume();
-                return wrapUp(next);
+                return wrapUp(closer);
             }
             else if (Block.isBlockEnd(next)) {
+                var closer = new Symbol(next, [state.position, state.position]);
                 state.consume();
-                return new ParseError("Non-matching block end");
+                return new ParseError("Non-matching block end", __spreadArrays(statements, phrases, [
+                    closer,
+                ]));
             }
             else if (Statement.isTerminator(next)) {
+                var terminator = new Symbol(next, [state.position, state.position]);
+                wrapUpStatement(terminator);
                 state.consume();
-                wrapUpStatement(next);
             }
             else if (Whitespace.isWhitespace(next)) {
                 phrases.push(Whitespace.parseWhitespace(state));
@@ -387,15 +405,16 @@ var Block = /** @class */ (function (_super) {
         return wrapUp();
         function wrapUpStatement(terminator) {
             if (phrases.length)
-                statements.push(new Statement(new Phrase(phrases), typeof terminator == "string" ? new Symbol(terminator) : undefined));
+                statements.push(new Statement(new Phrase(phrases), terminator));
             phrases = [];
         }
         function wrapUp(closer) {
             wrapUpStatement();
-            return new Block([new Symbol(openingParen), new Symbol(closer || "")], statements);
+            return new Block([openingParen, closer], statements);
         }
     };
-    Block.isMatchingParen = function (left, right) {
+    Block.isMatchingParen = function (leftSymbol, right) {
+        var left = leftSymbol.chars;
         var matchingStart = this.parenPairs.find(function (p) { return p[0] == left; });
         if (matchingStart && matchingStart[1] != right)
             return false;
@@ -409,24 +428,29 @@ var Block = /** @class */ (function (_super) {
     Block.blockEndRegex = /\p{Close_Punctuation}/u;
     Block.parenPairs = ["{}", "[]", "()"];
     return Block;
-}(Token));
+}(ParentToken));
 exports.Block = Block;
 var Quote = /** @class */ (function (_super) {
     __extends(Quote, _super);
-    function Quote(delimiters, body) {
-        var _this = _super.call(this) || this;
+    function Quote(delimiters, body, position) {
+        var _this = _super.call(this, position) || this;
         _this.delimiters = delimiters;
         _this.body = body;
-        _this.inheritPosition.apply(_this, delimiters);
         return _this;
     }
     Quote.parseQuote = function (state, accumulator) {
         var openingQuote = state.peek();
+        var start = state.position;
         state.consume();
         var opener = accumulator + openingQuote;
+        var openerSymbol = new Symbol(openingQuote, [
+            state.position,
+            state.position,
+        ]);
         var expectedCloser = openingQuote + accumulator;
+        var closerLength = expectedCloser.length;
         var content = "";
-        while (state.peek(expectedCloser.length) != expectedCloser) {
+        while (state.peek(closerLength) != expectedCloser) {
             var next = state.peek();
             state.consume();
             if (accumulator && next == "\\") {
@@ -436,12 +460,20 @@ var Quote = /** @class */ (function (_super) {
             else {
                 content += next;
             }
-            state.consume();
             if (!state.any()) {
-                return new ParseError("Expected closing quote");
+                var end_1 = state.position;
+                return new ParseError("Expected closing quote", [
+                    new Quote([openerSymbol, new Symbol("", [state.position, state.position])], content, [start, end_1]),
+                ]);
             }
         }
-        return new Quote([new Symbol(opener), new Symbol(expectedCloser)], content);
+        var closer = new Symbol(state.peek(closerLength), [
+            state.position,
+            state.position + closerLength,
+        ]);
+        state.consume(closerLength);
+        var end = state.position;
+        return new Quote([openerSymbol, closer], content, [start, end]);
     };
     Quote.isQuote = function (char) {
         if (Quote.regex.test(char))
@@ -461,27 +493,69 @@ exports.Quote = Quote;
 var Program = /** @class */ (function (_super) {
     __extends(Program, _super);
     function Program(statements) {
-        var _this = _super.call(this) || this;
+        var _this = _super.call(this, statements) || this;
         _this.statements = statements;
-        _this.inheritPosition.apply(_this, statements);
         return _this;
     }
     Program.parseProgram = function (input) {
-        var blockParser = Block.parseBlockInner("", new ParserState(input));
+        var blockParser = Block.parseBlockInner(new Symbol("", [0, 0]), new ParserState(input));
         return new Program(blockParser.body);
     };
     return Program;
-}(Token));
+}(ParentToken));
 exports.Program = Program;
 var ParseError = /** @class */ (function (_super) {
     __extends(ParseError, _super);
-    function ParseError(message) {
-        var _this = _super.call(this) || this;
+    function ParseError(message, childTokens) {
+        var _this = _super.call(this, childTokens) || this;
         _this.message = message;
         return _this;
     }
     return ParseError;
-}(Token));
+}(ParentToken));
 exports.ParseError = ParseError;
-var output = Program.parseProgram("\nx[foo] = {\n  y = foo;\n  z = 100;\n\n  y + z\n}\n\nbiz[m] = x[m + 1]\n");
-console.log(JSON.stringify(output, null, 2));
+var expressions = "\nx[foo]\na(b)\nf{z}\nm`foo`\nm'foo'\nm\"foo\"\nm ##'foo'##\nm #####'foo'#####\nm`foo`\nbiz baz buz\nfoo(bar, bim, bam)\n! @ Foo BAR.BIM\n".split("\n");
+function makeRunner(lines, depth) {
+    var program = "";
+    var currentDepth = 0;
+    var currentLine = 0;
+    var ascending = true;
+    while (currentLine < lines) {
+        var newLine = expressions[currentLine % expressions.length];
+        if (ascending) {
+            if (currentDepth < depth) {
+                currentDepth++;
+                newLine += " = {";
+            }
+            else {
+                ascending = false;
+            }
+        }
+        else {
+            if (currentDepth > 0) {
+                currentDepth--;
+                newLine += " }";
+            }
+            else {
+                ascending = true;
+            }
+        }
+        program += new Array(currentDepth).fill("  ").join("") + newLine + "\n";
+        currentLine++;
+    }
+    console.log(program);
+    return function () {
+        return Program.parseProgram(program);
+        // console.log(compiled.length());
+    };
+}
+var run = makeRunner(1000, 1);
+var start = Date.now();
+for (var i = 0; i < 1000; i++) {
+    var result = run();
+    if (i == 0)
+        console.log(result);
+}
+var end = Date.now();
+console.log(end - start);
+// console.log(JSON.stringify(output, null, 2));
